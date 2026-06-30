@@ -1,0 +1,22 @@
+[package]
+name = "remunerations"
+version = "1.0.0"
+edition = "2024"
+
+[dependencies]
+scraper = "0.12"
+tokio = { version = "1", features = ["full"] }
+csv = "1.1"
+chrono = "0.4"
+regex = "1"
+parquet = {  version = "54.3.0" , features = ["arrow"]}
+arrow = "54.3.0"
+serde = { version = "1.0", features = ["derive"] }
+headless_chrome = "1.0.17"
+indicatif = "0.18.4"
+dotenvy = "0.15.7"
+crawl = { path = "../crawl" }
+
+[[bin]]
+name = "remunerations"
+path = "src/main.rs"

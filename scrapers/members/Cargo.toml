@@ -1,0 +1,21 @@
+[package]
+name = "members"
+version = "1.0.0"
+edition = "2024"
+
+[dependencies]
+scraper = "0.12"
+tokio = { version = "1", features = ["full"] }
+csv = "1.1"
+chrono = "0.4"
+regex = "1"
+crawl = { path = "../crawl" }
+parquet = {  version = "54.3.0" , features = ["arrow"]}
+arrow = "54.3.0"
+reqwest = "0.12.14"
+indicatif = "0.18.4"
+dotenvy = "0.15.7"
+
+[[bin]]
+name = "members"
+path = "src/main.rs"

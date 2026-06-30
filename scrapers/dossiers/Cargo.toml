@@ -1,0 +1,26 @@
+[package]
+name = "dossiers"
+version = "1.0.0"
+edition = "2024"
+
+[dependencies]
+scraper = "0.12"
+tokio = { version = "1", features = ["full"] }
+csv = "1.1"
+chrono = "0.4"
+regex = "1"
+crawl = { path = "../crawl" }
+serde = { version = "1.0.218", features = ["derive"] }
+encoding_rs = "0.8.35"
+parquet = {  version = "54.3.0" , features = ["arrow"]}
+arrow = "54.3.0"
+serde_json = "1.0.140"
+reqwest = "0.12.14"
+itertools = "0.12"
+http = "1.0"
+indicatif = "0.18.4"
+dotenvy = "0.15.7"
+
+[[bin]]
+name = "dossiers"
+path = "src/main.rs"

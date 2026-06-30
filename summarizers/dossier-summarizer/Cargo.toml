@@ -1,0 +1,21 @@
+[package]
+name = "dossier-summarizer"
+version = "1.0.0"
+edition = "2024"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+arrow = "54.3.0"
+parquet = {  version = "54.3.1" , features = ["arrow"]}
+indicatif = "0.17.11"
+crawl = { path = "../../scrapers/crawl" }
+reqwest = { version = "0.12.15", features = ["json"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0.140"
+sha2 = "0.10"
+dotenvy = "0.15.7"
+chrono = "0.4"
+
+[[bin]]
+name = "dossier-summarizer"
+path = "src/main.rs"

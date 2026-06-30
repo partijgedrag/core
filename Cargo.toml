@@ -1,0 +1,15 @@
+[workspace]
+resolver = "2"
+
+members = [
+    "scrapers/sessions",
+    "scrapers/members",
+    "scrapers/lobby",
+    "scrapers/remunerations",
+    "scrapers/commissions",
+    "scrapers/plenary-meetings",
+    "scrapers/commission-meetings",
+    "scrapers/dossiers",
+    "summarizers/dossier-summarizer",
+    "summarizers/text-summarizer"
+]
