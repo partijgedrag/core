@@ -288,7 +288,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let session_dir = data_dir()
         .join("sessions")
         .join(session_id.to_string())
-        .join("plenary");
+        .join("commission");
     fs::create_dir_all(&session_dir).await?;
 
     let meeting_id_path = data_dir().join("current_commission_id.txt");
