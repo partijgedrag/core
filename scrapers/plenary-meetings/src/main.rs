@@ -645,6 +645,7 @@ async fn extract_questions(
         "mondelinge vragen",
         "vragen",
         "questions orales",
+        "question orales",
         "questions",
     ];
 
