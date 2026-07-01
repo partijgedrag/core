@@ -9,6 +9,7 @@ from typing import Callable, Optional
 
 import fitz
 import requests
+from dotenv import load_dotenv
 from tqdm import tqdm
 
 # GLOBAL FLAGS
@@ -678,10 +679,20 @@ def read_dossier_rows(parquet_path: Path) -> list[dict]:
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 def main():
+    load_dotenv()
+
+    SCRAPER_DATA_DIR = Path(os.environ["SCRAPER_DATA_DIR"])
+    SCRAPER_CACHE_DIR = Path(os.environ["SCRAPER_CACHE_DIR"])
+
     root = Path(__file__).resolve().parents[0]
-    dossiers_parquet = root / f"../../data/sessions/{SESSION_ID}/dossiers.parquet"
-    pdf_cache_dir = root / f"../cache/sessions/{SESSION_ID}/dossiers"
-    pdf_cache_dir.mkdir(parents=True, exist_ok=True)
+
+    dossiers_parquet = SCRAPER_DATA_DIR / f"sessions/{SESSION_ID}/dossiers.parquet"
+
+    pdf_cache_root = SCRAPER_CACHE_DIR / f"sessions/{SESSION_ID}/dossiers/pdfs"
+    pdf_cache_root.mkdir(parents=True, exist_ok=True)
+
+    output_root = SCRAPER_CACHE_DIR / f"sessions/{SESSION_ID}/dossiers"
+    output_root.mkdir(parents=True, exist_ok=True)
 
     # Read dossier list
     if not dossiers_parquet.exists():
@@ -712,7 +723,7 @@ def main():
             dossier_id = row["dossier_id"]
             pbar.set_description(f"Processing {dossier_id}")
 
-            dossier_dir = pdf_cache_dir / dossier_id
+            dossier_dir = pdf_cache_root / dossier_id
             dossier_dir.mkdir(parents=True, exist_ok=True)
 
             # ── Clean up derived files from previous runs ──────────────────

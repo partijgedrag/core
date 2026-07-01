@@ -6,9 +6,3 @@
 # data
 /data
 /cache
-
-# PDF summarizers
-/summarizers/**/report_original.pdf
-/summarizers/**/adopted_text_original.pdf
-/summarizers/**/report_extraction.html
-/summarizers/**/adopted_text_extraction.html

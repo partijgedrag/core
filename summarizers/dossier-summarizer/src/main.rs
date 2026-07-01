@@ -1,6 +1,7 @@
 use arrow::array::{Array, StringArray};
 use arrow::datatypes::{DataType, Field};
 use arrow::{datatypes::Schema, record_batch::RecordBatch};
+use crawl::paths::{cache_dir, data_dir};
 use indicatif::{ProgressBar, ProgressStyle};
 use parquet::{arrow::ArrowWriter, arrow::arrow_reader::ParquetRecordBatchReaderBuilder};
 use reqwest::Client;
@@ -15,7 +16,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 use tokio::sync::Mutex as TokioMutex;
-use crawl::paths::{cache_dir, data_dir};
 
 struct RateLimiter {
     interval_ms: u64,
@@ -557,11 +557,11 @@ async fn main() {
         // ── dossier_arguments.parquet — from report.md ───────────────────────
         let report_path = dossier_dir.join("report.md");
         if report_path.exists() {
-            let content = std::fs::read_to_string(&adopted_path).unwrap_or_default();
+            let content = std::fs::read_to_string(&report_path).unwrap_or_default();
             let trimmed_content = content.trim();
             if trimmed_content.len() < 500 {
                 eprintln!(
-                    "[summarizer] WARNING: skipping dossier {dossier_id} adopted_text.md — content too short ({} chars < 500)",
+                    "[summarizer] WARNING: skipping dossier {dossier_id} report.md — content too short ({} chars < 500)",
                     trimmed_content.len()
                 );
             } else if !trimmed_content.is_empty() {
