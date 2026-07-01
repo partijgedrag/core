@@ -49,8 +49,8 @@ const MAX_RETRIES: u32 = 5;
 const INITIAL_BACKOFF_MS: u64 = 2_000;
 const MAX_BACKOFF_MS: u64 = 60_000;
 const SAVE_EVERY: usize = 5;
-const MODEL_CONTENT: &str = "mistral-large-latest";
-const MODEL_ARGUMENTS: &str = "mistral-large-latest";
+const MODEL_ADOPTED_TEXT: &str = "mistral-large-latest";
+const MODEL_REPORT: &str = "mistral-large-latest";
 const SEO_TITLE_MIN: usize = 40;
 const SEO_TITLE_MAX: usize = 60;
 const SEO_DESCRIPTION_MIN: usize = 120;
@@ -554,7 +554,7 @@ async fn main() {
     let mistral_api_key = std::env::var("MISTRAL_API_TOKEN").expect("Missing MISTRAL_API_TOKEN");
 
     // Optional: pass a single dossier ID as a CLI argument for testing.
-    let single_dossier: Option<String> = Some(String::from("1570")); //std::env::args().nth(1);
+    let single_dossier: Option<String> = Some(String::from("1526")); //std::env::args().nth(1);
     let client = Client::new();
     let dossiers_base = cache_dir().join("sessions/56/dossiers/pdfs");
     let content_out = data_dir().join("summaries/dossier_content.parquet");
@@ -599,11 +599,17 @@ async fn main() {
         let adopted_path = dossier_dir.join("adopted_text.md");
         if adopted_path.exists() {
             let content = std::fs::read_to_string(&adopted_path).unwrap_or_default();
-            if !content.trim().is_empty() {
+            let trimmed_content = content.trim();
+            if trimmed_content.len() < 500 {
+                eprintln!(
+                    "[summarizer] WARNING: skipping dossier {dossier_id} adopted_text.md — content too short ({} chars < 500)",
+                    trimmed_content.len()
+                );
+            } else if !content.trim().is_empty() {
                 let hash = hash_text(&content);
                 if !content_cache.contains_key(&hash) {
                     pb.set_message(format!(
-                        "api_calls={total_calls} — summarizing content for dossier {dossier_id}"
+                        "api_calls={total_calls} — summarizing adopted text for dossier {dossier_id}"
                     ));
                     let user = user_prompt_content(&content);
                     if let Some(raw_response) = mistral_complete(
@@ -611,7 +617,7 @@ async fn main() {
                         &mistral_api_key,
                         system_prompt_content(),
                         &user,
-                        MODEL_CONTENT,
+                        MODEL_ADOPTED_TEXT,
                         &mut total_calls,
                         &rate_limiter,
                     )
@@ -627,7 +633,7 @@ async fn main() {
                                 summary: parsed.summary,
                                 title: parsed.title,
                                 description: parsed.description,
-                                model: MODEL_CONTENT.to_string(),
+                                model: MODEL_ADOPTED_TEXT.to_string(),
                                 dossier_id: dossier_id.clone(),
                                 source,
                                 created_at: now_rfc3339(),
@@ -661,7 +667,7 @@ async fn main() {
                 let hash = hash_text(&content);
                 if !arguments_cache.contains_key(&hash) {
                     pb.set_message(format!(
-                        "api_calls={total_calls} — analysing arguments for dossier {dossier_id}"
+                        "api_calls={total_calls} — summarizing report for dossier {dossier_id}"
                     ));
                     let user = user_prompt_arguments(&content);
                     if let Some(raw_response) = mistral_complete(
@@ -669,7 +675,7 @@ async fn main() {
                         &mistral_api_key,
                         system_prompt_arguments(),
                         &user,
-                        MODEL_ARGUMENTS,
+                        MODEL_REPORT,
                         &mut total_calls,
                         &rate_limiter,
                     )
@@ -684,7 +690,7 @@ async fn main() {
                             CachedReportSummaries {
                                 summary_hash: hash,
                                 arguments: arguments_json,
-                                model: MODEL_ARGUMENTS.to_string(),
+                                model: MODEL_REPORT.to_string(),
                                 dossier_id: dossier_id.clone(),
                                 source,
                                 created_at: now_rfc3339(),

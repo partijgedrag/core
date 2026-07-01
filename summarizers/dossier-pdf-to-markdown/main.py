@@ -76,12 +76,13 @@ TABLE_OF_CONTENTS_PAGE_MARKERS = [
 # Regex to detect "same as committee text" redirect pages
 _REDIRECT_PATTERN = re.compile(
     r"(?:"
-    # Dutch: "...is dezelfde als de tekst aangenomen [in tweede lezing] door de commissie"
-    r"tekst aangenomen door de plenaire vergadering\s+is dezelfde als de tekst aangenomen"
-    r"(?:\s+in tweede lezing)?\s+door de commissie"
+    # Dutch: "...is dezelfde als de tekst/artikelen aangenomen [in eerste/tweede lezing] door de commissie"
+    r"tekst aangenomen door de plenaire vergadering\s+is dezelfde als de (?:tekst|artikelen) aangenomen"
+    r"(?:\s+in (?:eerste|tweede) lezing)?\s+door de commissie"
     r"|"
-    # French
-    r"texte adopt[eé] (?:en s[eé]ance pl[eé]ni[eè]re|par la s[eé]ance pl[eé]ni[eè]re)\s+est identique au texte adopt[eé] par la commission"
+    # French: mirror both variants (texte/articles, première/deuxième lecture)
+    r"texte adopt[eé] (?:en s[eé]ance pl[eé]ni[eè]re|par la s[eé]ance pl[eé]ni[eè]re)\s+est identique (?:au texte adopt[eé]|aux articles adopt[eé]s)"
+    r"(?:\s+en (?:premi[eè]re|deuxi[eè]me) lecture)?\s+par la commission"
     r")"
     r"\s*\(?DOC\s+(\d+)\s+(\d+)/(\d{3,4})\)?",
     re.IGNORECASE | re.DOTALL,
