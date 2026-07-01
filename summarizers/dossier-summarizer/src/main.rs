@@ -11,7 +11,7 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs::File;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
@@ -30,7 +30,6 @@ impl RateLimiter {
             min_next_call: TokioMutex::new(Instant::now()),
         }
     }
-
     async fn acquire(&self) {
         let mut guard = self.min_next_call.lock().await;
         let now = Instant::now();
@@ -39,33 +38,38 @@ impl RateLimiter {
         }
         *guard = Instant::now() + Duration::from_millis(self.interval_ms);
     }
-
     async fn penalize(&self, delay_ms: u64) {
         let mut guard = self.min_next_call.lock().await;
         *guard = Instant::now() + Duration::from_millis(delay_ms);
     }
 }
 
+// CONSTANTS
 const MAX_RETRIES: u32 = 5;
 const INITIAL_BACKOFF_MS: u64 = 2_000;
 const MAX_BACKOFF_MS: u64 = 60_000;
 const SAVE_EVERY: usize = 5;
-
 const MODEL_CONTENT: &str = "mistral-large-latest";
 const MODEL_ARGUMENTS: &str = "mistral-large-latest";
+const SEO_TITLE_MIN: usize = 40;
+const SEO_TITLE_MAX: usize = 60;
+const SEO_DESCRIPTION_MIN: usize = 120;
+const SEO_DESCRIPTION_MAX: usize = 158;
 
-struct CachedContent {
+struct CachedAdoptedTextSummaries {
     summary_hash: String,
     summary: String,
+    title: String,
+    description: String,
     model: String,
     dossier_id: String,
     source: String,
     created_at: String,
 }
 
-struct CachedArguments {
+struct CachedReportSummaries {
     summary_hash: String,
-    arguments: String, // JSON string
+    arguments: String,
     model: String,
     dossier_id: String,
     source: String,
@@ -88,10 +92,15 @@ struct ApiResponse {
     choices: Vec<Choice>,
 }
 
-/// The structured JSON we ask the model to fill in.
-/// The LLM produces plain-text fields; we assemble the JSON ourselves.
 #[derive(Serialize, Deserialize, Debug, Default)]
-struct ArgumentsJson {
+struct AdoptedTextSummaryJson {
+    title: String,
+    description: String,
+    summary: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Default)]
+struct ReportSummaryJson {
     title: String,
     description: String,
     arguments_pro: Vec<PartyArgument>,
@@ -106,21 +115,48 @@ struct PartyArgument {
     argument: String,
 }
 
+// PROMPTS
 fn system_prompt_content() -> &'static str {
-    "Je bent een objectieve samenvatter van parlementaire documenten."
+    "Je bent een objectieve samenvatter van parlementaire documenten en een ervaren SEO-copywriter. \
+Je antwoordt ALTIJD uitsluitend met geldig JSON. \
+Geen extra tekst, geen uitleg, geen markdown code-blokken — enkel de JSON."
 }
 
 fn user_prompt_content(content: &str) -> String {
     format!(
         "Je krijgt de volledige tekst van een aangenomen parlementaire tekst. \
-Vat de tekst samen voor een gewone kiezer zonder juridische kennis.\n\
+Geef je antwoord als JSON met EXACT deze structuur (geen extra velden, geen commentaar, geen markdown):\n\n\
+{{\n\
+  \"title\": \"SEO-titel voor deze pagina, tussen {title_min} en {title_max} tekens\",\n\
+  \"description\": \"SEO meta-omschrijving voor deze pagina, tussen {desc_min} en {desc_max} tekens\",\n\
+  \"summary\": \"samenvatting van de tekst voor een gewone kiezer zonder juridische kennis\"\n\
+}}\n\n\
+Regels voor \"title\":\n\
+- Schrijf in het Nederlands.\n\
+- Tussen {title_min} en {title_max} tekens lang (streef naar die lengte, niet korter, niet langer).\n\
+- Beknopt en concreet, benoem het hoofdonderwerp van het dossier.\n\
+- Geen aanhalingstekens, geen slotpunt, geen 'Samenvatting:' of vergelijkbare voorzetsels.\n\
+- Geen politieke interpretatie, enkel feiten.\n\n\
+Regels voor \"description\":\n\
+- Schrijf in het Nederlands.\n\
+- Tussen {desc_min} en {desc_max} tekens lang (streef naar die lengte, niet korter, niet langer).\n\
+- Eén tot twee zinnen die duidelijk maken waar het dossier over gaat en wat de concrete gevolgen zijn.\n\
+- Geschikt als meta-description voor zoekmachines: pakkend maar feitelijk, geen clickbait.\n\
+- Geen aanhalingstekens, geen politieke interpretatie, enkel feiten.\n\n\
+Regels voor \"summary\":\n\
 - Schrijf in het Nederlands.\n\
 - Gebruik maximaal 4 zinnen, hoe korter hoe beter.\n\
 - Benadruk het hoofdonderwerp en de concrete gevolgen.\n\
 - Houd het objectief — geen politieke interpretatie, alleen feiten.\n\
 - Geen extra uitleg, geen opsommingen, enkel de samenvatting.\n\
 - Geen voorzetsel zoals 'Samenvatting:' of 'Samenvatting van de tekst:'.\n\n\
-Documentinhoud:\n{content}"
+Enkel de JSON teruggeven, niets anders.\n\n\
+Documentinhoud:\n{content}",
+        title_min = SEO_TITLE_MIN,
+        title_max = SEO_TITLE_MAX,
+        desc_min = SEO_DESCRIPTION_MIN,
+        desc_max = SEO_DESCRIPTION_MAX,
+        content = content
     )
 }
 
@@ -159,13 +195,10 @@ Documentinhoud:\n{content}"
     )
 }
 
-/// Parse the model's JSON response into `ArgumentsJson`.
-/// Strips optional ```json … ``` fences that some models add despite instructions.
-fn parse_arguments_response(raw: &str) -> ArgumentsJson {
-    // Strip markdown code fences if present.
+/// Strip optional ```json … ``` fences that some models add despite instructions.
+fn strip_code_fences(raw: &str) -> String {
     let stripped = raw.trim();
-    let json_str = if stripped.starts_with("```") {
-        // Remove first line (``` or ```json) and last ``` line.
+    if stripped.starts_with("```") {
         let inner: Vec<&str> = stripped.lines().collect();
         let start = 1;
         let end = inner
@@ -175,15 +208,51 @@ fn parse_arguments_response(raw: &str) -> ArgumentsJson {
         inner[start..end].join("\n")
     } else {
         stripped.to_string()
-    };
+    }
+}
 
+fn parse_adopted_text_summary_response(raw: &str) -> AdoptedTextSummaryJson {
+    let json_str = strip_code_fences(raw);
     serde_json::from_str(&json_str).unwrap_or_else(|e| {
-        eprintln!("[summarizer] WARNING: failed to parse arguments JSON: {e}\nRaw:\n{raw}");
-        ArgumentsJson::default()
+        eprintln!("[summarizer] WARNING: failed to parse content JSON: {e}\nRaw:\n{raw}");
+        AdoptedTextSummaryJson::default()
     })
 }
 
-fn load_existing_content(path: &Path) -> HashMap<String, CachedContent> {
+fn parse_report_summary_response(raw: &str) -> ReportSummaryJson {
+    let json_str = strip_code_fences(raw);
+    serde_json::from_str(&json_str).unwrap_or_else(|e| {
+        eprintln!("[summarizer] WARNING: failed to parse arguments JSON: {e}\nRaw:\n{raw}");
+        ReportSummaryJson::default()
+    })
+}
+
+/// Log a warning if the generated title/description fall well outside
+/// the requested SEO length range, so it's easy to spot in logs without failing the run.
+fn check_seo_lengths(dossier_id: &str, title: &str, description: &str) {
+    let title_len = title.chars().count();
+    let desc_len = description.chars().count();
+    if title_len == 0
+        || title_len < SEO_TITLE_MIN.saturating_sub(10)
+        || title_len > SEO_TITLE_MAX + 15
+    {
+        eprintln!(
+            "[summarizer] WARNING: dossier {dossier_id} title length {title_len} is outside expected SEO range ({SEO_TITLE_MIN}-{SEO_TITLE_MAX})"
+        );
+    }
+    if desc_len == 0
+        || desc_len < SEO_DESCRIPTION_MIN.saturating_sub(20)
+        || desc_len > SEO_DESCRIPTION_MAX + 25
+    {
+        eprintln!(
+            "[summarizer] WARNING: dossier {dossier_id} description length {desc_len} is outside expected SEO range ({SEO_DESCRIPTION_MIN}-{SEO_DESCRIPTION_MAX})"
+        );
+    }
+}
+
+fn load_existing_adopted_text_summaries(
+    path: &Path,
+) -> HashMap<String, CachedAdoptedTextSummaries> {
     let mut map = HashMap::new();
     if !path.exists() {
         return map;
@@ -197,6 +266,8 @@ fn load_existing_content(path: &Path) -> HashMap<String, CachedContent> {
         let batch = batch.unwrap();
         let hash_col = col_str(&batch, "summary_hash");
         let summary_col = col_str(&batch, "summary");
+        let title_col = col_str(&batch, "title");
+        let description_col = col_str(&batch, "description");
         let model_col = col_str(&batch, "model");
         let dossier_id_col = col_str(&batch, "dossier_id");
         let source_col = col_str(&batch, "source");
@@ -204,9 +275,11 @@ fn load_existing_content(path: &Path) -> HashMap<String, CachedContent> {
         for i in 0..batch.num_rows() {
             map.insert(
                 hash_col.value(i).to_string(),
-                CachedContent {
+                CachedAdoptedTextSummaries {
                     summary_hash: hash_col.value(i).to_string(),
                     summary: summary_col.value(i).to_string(),
+                    title: title_col.value(i).to_string(),
+                    description: description_col.value(i).to_string(),
                     model: model_col.value(i).to_string(),
                     dossier_id: dossier_id_col.value(i).to_string(),
                     source: source_col.value(i).to_string(),
@@ -218,7 +291,7 @@ fn load_existing_content(path: &Path) -> HashMap<String, CachedContent> {
     map
 }
 
-fn load_existing_arguments(path: &Path) -> HashMap<String, CachedArguments> {
+fn load_existing_report_summaries(path: &Path) -> HashMap<String, CachedReportSummaries> {
     let mut map = HashMap::new();
     if !path.exists() {
         return map;
@@ -239,7 +312,7 @@ fn load_existing_arguments(path: &Path) -> HashMap<String, CachedArguments> {
         for i in 0..batch.num_rows() {
             map.insert(
                 hash_col.value(i).to_string(),
-                CachedArguments {
+                CachedReportSummaries {
                     summary_hash: hash_col.value(i).to_string(),
                     arguments: args_col.value(i).to_string(),
                     model: model_col.value(i).to_string(),
@@ -253,15 +326,34 @@ fn load_existing_arguments(path: &Path) -> HashMap<String, CachedArguments> {
     map
 }
 
-fn save_content(
+fn save_adopted_text_summary(
     path: &Path,
-    cache: &HashMap<String, CachedContent>,
+    cache: &HashMap<String, CachedAdoptedTextSummaries>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (mut hashes, mut summaries, mut models, mut dossier_ids, mut sources, mut created_ats) =
-        (vec![], vec![], vec![], vec![], vec![], vec![]);
+    let (
+        mut hashes,
+        mut summaries,
+        mut titles,
+        mut descriptions,
+        mut models,
+        mut dossier_ids,
+        mut sources,
+        mut created_ats,
+    ) = (
+        vec![],
+        vec![],
+        vec![],
+        vec![],
+        vec![],
+        vec![],
+        vec![],
+        vec![],
+    );
     for row in cache.values() {
         hashes.push(row.summary_hash.clone());
         summaries.push(row.summary.clone());
+        titles.push(row.title.clone());
+        descriptions.push(row.description.clone());
         models.push(row.model.clone());
         dossier_ids.push(row.dossier_id.clone());
         sources.push(row.source.clone());
@@ -270,6 +362,8 @@ fn save_content(
     let schema = Arc::new(Schema::new(vec![
         Field::new("summary_hash", DataType::Utf8, false),
         Field::new("summary", DataType::Utf8, false),
+        Field::new("title", DataType::Utf8, false),
+        Field::new("description", DataType::Utf8, false),
         Field::new("model", DataType::Utf8, false),
         Field::new("dossier_id", DataType::Utf8, false),
         Field::new("source", DataType::Utf8, false),
@@ -280,6 +374,8 @@ fn save_content(
         vec![
             Arc::new(StringArray::from(hashes)),
             Arc::new(StringArray::from(summaries)),
+            Arc::new(StringArray::from(titles)),
+            Arc::new(StringArray::from(descriptions)),
             Arc::new(StringArray::from(models)),
             Arc::new(StringArray::from(dossier_ids)),
             Arc::new(StringArray::from(sources)),
@@ -295,9 +391,9 @@ fn save_content(
     Ok(())
 }
 
-fn save_arguments(
+fn save_report_summary(
     path: &Path,
-    cache: &HashMap<String, CachedArguments>,
+    cache: &HashMap<String, CachedReportSummaries>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (mut hashes, mut arguments, mut models, mut dossier_ids, mut sources, mut created_ats) =
         (vec![], vec![], vec![], vec![], vec![], vec![]);
@@ -346,6 +442,7 @@ fn col_str<'a>(batch: &'a RecordBatch, name: &str) -> &'a StringArray {
         .unwrap_or_else(|| panic!("Column {name} is not a StringArray"))
 }
 
+/// Call Mistral API
 async fn mistral_complete(
     client: &Client,
     api_key: &str,
@@ -362,14 +459,11 @@ async fn mistral_complete(
             { "role": "user",   "content": user }
         ]
     });
-
     let mut attempt = 0u32;
     let mut backoff_ms = INITIAL_BACKOFF_MS;
-
     loop {
         attempt += 1;
         rate_limiter.acquire().await;
-
         let response = client
             .post("https://api.mistral.ai/v1/chat/completions")
             .header(CONTENT_TYPE, "application/json")
@@ -378,7 +472,6 @@ async fn mistral_complete(
             .json(&payload)
             .send()
             .await;
-
         match response {
             Ok(resp) if resp.status().is_success() => {
                 let json_resp: ApiResponse = resp.json().await.unwrap();
@@ -438,7 +531,7 @@ fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
-/// Collect all dossier IDs from `summarizers/cache/sessions/56/dossiers/`.
+/// Collect all dossier IDs
 fn discover_dossier_ids(base: &Path) -> Vec<String> {
     let mut ids = Vec::new();
     if let Ok(entries) = std::fs::read_dir(base) {
@@ -456,33 +549,30 @@ fn discover_dossier_ids(base: &Path) -> Vec<String> {
 
 #[tokio::main]
 async fn main() {
+    // Load environment variables
     dotenvy::dotenv().ok();
     let mistral_api_key = std::env::var("MISTRAL_API_TOKEN").expect("Missing MISTRAL_API_TOKEN");
 
     // Optional: pass a single dossier ID as a CLI argument for testing.
-    let single_dossier: Option<String> = Some(String::from("1405")); //std::env::args().nth(1);
-
+    let single_dossier: Option<String> = Some(String::from("1570")); //std::env::args().nth(1);
     let client = Client::new();
-
-    let dossiers_base = cache_dir().join("summaries/dossiers");
+    let dossiers_base = cache_dir().join("sessions/56/dossiers/pdfs");
     let content_out = data_dir().join("summaries/dossier_content.parquet");
     let arguments_out = data_dir().join("summaries/dossier_arguments.parquet");
 
     // Shared rate limiter for mistral-large-latest (1 req/s with margin).
     let rate_limiter = Arc::new(RateLimiter::new(1.0));
-
     let dossier_ids: Vec<String> = if let Some(ref id) = single_dossier {
         println!("[summarizer] single-dossier mode: {id}");
         vec![id.clone()]
     } else {
         discover_dossier_ids(&dossiers_base)
     };
-
     println!("[summarizer] found {} dossiers", dossier_ids.len());
 
     // Load caches.
-    let mut content_cache = load_existing_content(&content_out);
-    let mut arguments_cache = load_existing_arguments(&arguments_out);
+    let mut content_cache = load_existing_adopted_text_summaries(&content_out);
+    let mut arguments_cache = load_existing_report_summaries(&arguments_out);
     println!(
         "[summarizer] loaded {} cached content summaries, {} cached argument analyses",
         content_cache.len(),
@@ -492,7 +582,6 @@ async fn main() {
     let mut total_calls = 0u32;
     let mut new_content: usize = 0;
     let mut new_arguments: usize = 0;
-
     let pb = ProgressBar::new(dossier_ids.len() as u64);
     pb.set_style(
         ProgressStyle::with_template(
@@ -506,7 +595,7 @@ async fn main() {
     for dossier_id in &dossier_ids {
         let dossier_dir = dossiers_base.join(dossier_id);
 
-        // ── dossier_content.parquet — from adopted_text.md ──────────────────
+        // Summarize adopted text
         let adopted_path = dossier_dir.join("adopted_text.md");
         if adopted_path.exists() {
             let content = std::fs::read_to_string(&adopted_path).unwrap_or_default();
@@ -517,7 +606,7 @@ async fn main() {
                         "api_calls={total_calls} — summarizing content for dossier {dossier_id}"
                     ));
                     let user = user_prompt_content(&content);
-                    if let Some(summary) = mistral_complete(
+                    if let Some(raw_response) = mistral_complete(
                         &client,
                         &mistral_api_key,
                         system_prompt_content(),
@@ -528,12 +617,16 @@ async fn main() {
                     )
                     .await
                     {
+                        let parsed = parse_adopted_text_summary_response(&raw_response);
+                        check_seo_lengths(dossier_id, &parsed.title, &parsed.description);
                         let source = format!("adopted_text.md ({})", adopted_path.display());
                         content_cache.insert(
                             hash.clone(),
-                            CachedContent {
+                            CachedAdoptedTextSummaries {
                                 summary_hash: hash,
-                                summary,
+                                summary: parsed.summary,
+                                title: parsed.title,
+                                description: parsed.description,
                                 model: MODEL_CONTENT.to_string(),
                                 dossier_id: dossier_id.clone(),
                                 source,
@@ -541,9 +634,9 @@ async fn main() {
                             },
                         );
                         new_content += 1;
-
                         if new_content % SAVE_EVERY == 0 {
-                            if let Err(e) = save_content(&content_out, &content_cache) {
+                            if let Err(e) = save_adopted_text_summary(&content_out, &content_cache)
+                            {
                                 eprintln!(
                                     "[summarizer] WARNING: content checkpoint save failed: {e}"
                                 );
@@ -554,7 +647,7 @@ async fn main() {
             }
         }
 
-        // ── dossier_arguments.parquet — from report.md ───────────────────────
+        // Summarize report
         let report_path = dossier_dir.join("report.md");
         if report_path.exists() {
             let content = std::fs::read_to_string(&report_path).unwrap_or_default();
@@ -582,13 +675,13 @@ async fn main() {
                     )
                     .await
                     {
-                        let parsed = parse_arguments_response(&raw_response);
+                        let parsed = parse_report_summary_response(&raw_response);
                         let arguments_json =
                             serde_json::to_string(&parsed).unwrap_or_else(|_| "{}".to_string());
                         let source = format!("report.md ({})", report_path.display());
                         arguments_cache.insert(
                             hash.clone(),
-                            CachedArguments {
+                            CachedReportSummaries {
                                 summary_hash: hash,
                                 arguments: arguments_json,
                                 model: MODEL_ARGUMENTS.to_string(),
@@ -598,9 +691,8 @@ async fn main() {
                             },
                         );
                         new_arguments += 1;
-
                         if new_arguments % SAVE_EVERY == 0 {
-                            if let Err(e) = save_arguments(&arguments_out, &arguments_cache) {
+                            if let Err(e) = save_report_summary(&arguments_out, &arguments_cache) {
                                 eprintln!(
                                     "[summarizer] WARNING: arguments checkpoint save failed: {e}"
                                 );
@@ -617,11 +709,10 @@ async fn main() {
 
     pb.finish_with_message(format!("api_calls={total_calls} done"));
 
-    // Final saves.
-    save_content(&content_out, &content_cache).expect("Failed to write dossier_content.parquet");
-    save_arguments(&arguments_out, &arguments_cache)
+    save_adopted_text_summary(&content_out, &content_cache)
+        .expect("Failed to write dossier_content.parquet");
+    save_report_summary(&arguments_out, &arguments_cache)
         .expect("Failed to write dossier_arguments.parquet");
-
     println!(
         "[summarizer] finished: {} new content summaries, {} new argument analyses, {} total API calls",
         new_content, new_arguments, total_calls
