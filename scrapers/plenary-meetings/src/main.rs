@@ -153,6 +153,7 @@ struct ScrapedQuestion {
     session_id: u32,
     meeting_id: u32,
     questioners: String,
+    questionees: String,
     respondents: String,
     topics_nl: String,
     topics_fr: String,
@@ -188,6 +189,7 @@ struct MeetingOutput {
 
 struct QuestionData {
     questioners: Vec<String>,
+    questionees: Vec<String>,
     respondents: Vec<String>,
     topics: Vec<String>,
     discussion: String,
@@ -198,6 +200,7 @@ impl Default for QuestionData {
     fn default() -> Self {
         Self {
             questioners: Vec::new(),
+            questionees: Vec::new(),
             respondents: Vec::new(),
             topics: Vec::new(),
             discussion: String::new(),
@@ -273,6 +276,7 @@ fn write_questions(path: &Path, rows: &[ScrapedQuestion]) -> Result<(), Box<dyn 
         Field::new("session_id", DataType::Utf8, false),
         Field::new("meeting_id", DataType::Utf8, false),
         Field::new("questioners", DataType::Utf8, false),
+        Field::new("questionees", DataType::Utf8, false),
         Field::new("respondents", DataType::Utf8, false),
         Field::new("topics_nl", DataType::Utf8, false),
         Field::new("topics_fr", DataType::Utf8, false),
@@ -287,6 +291,7 @@ fn write_questions(path: &Path, rows: &[ScrapedQuestion]) -> Result<(), Box<dyn 
             col!(rows, |q| q.session_id.to_string()),
             col!(rows, |q| q.meeting_id.to_string()),
             col!(rows, |q| q.questioners.clone()),
+            col!(rows, |q| q.questionees.clone()),
             col!(rows, |q| q.respondents.clone()),
             col!(rows, |q| q.topics_nl.clone()),
             col!(rows, |q| q.topics_fr.clone()),
@@ -632,6 +637,7 @@ async fn extract_questions(
             session_id,
             meeting_id,
             questioners: data_nl.questioners.join(","),
+            questionees: data_nl.questionees.join(","),
             respondents: data_nl.respondents.join(","),
             topics_nl: data_nl.topics.join(";"),
             topics_fr: data_fr.topics.join(";"),
@@ -1457,6 +1463,7 @@ fn extract_bilingual_spans(element: &ElementRef) -> (Option<String>, Option<Stri
         .last()
     {
         let text = clean_text(&span.text().collect::<Vec<_>>().join(" ")).replace("\"", "");
+        let text = normalize_leading_dash(text);
         if french_indicators
             .iter()
             .any(|w| text.to_lowercase().contains(w))
@@ -1472,6 +1479,7 @@ fn extract_bilingual_spans(element: &ElementRef) -> (Option<String>, Option<Stri
         .last()
     {
         let text = clean_text(&span.text().collect::<Vec<_>>().join(" ")).replace("\"", "");
+        let text = normalize_leading_dash(text);
 
         // NOTE: We override FR -> NL if clearly dutch based on some indicator words.
         if text.to_lowercase().contains(" aan ") {
@@ -1512,7 +1520,7 @@ fn is_likely_french(text: &str) -> bool {
         " qui ",
         " sur ",
         "constitutionnelle", // based on detected language mislabeling issue in plenary meeting 19
-        "comptes",           // based on detected language mislabeling issue in plenary meeting  19
+        "comptes",           // based on detected language mislabeling issue in plenary meeting 19
         "commission",        // based on detected language mislabeling issue in plenary meeting 19
     ];
 
@@ -1568,16 +1576,16 @@ fn extract_question_data(
 ) -> Result<QuestionData, Box<dyn Error>> {
     let mut questioners = Vec::new();
     let mut topics = Vec::new();
-    let mut respondents = Vec::new();
+    let mut questionees = Vec::new();
     let mut internal_ids = Vec::new();
 
     for capture in question_regex().captures_iter(question_text) {
-        let questioner_raw = capture[1].trim().replace("- ", "");
+        let questioner_raw = capture[1].trim().replace("- ", "").trim().to_string();
         let questioner = typo_map
             .get(&questioner_raw)
             .cloned()
             .unwrap_or(questioner_raw);
-        let respondent = capture[2].trim().to_string();
+        let questionee = capture[2].trim().to_string();
         let topic = capture
             .get(3)
             .or_else(|| capture.get(4))
@@ -1591,21 +1599,91 @@ fn extract_question_data(
             .map(|m| format!("Q{}", m.as_str().trim()))
             .unwrap_or_default();
 
-        questioners.push(questioner);
-        if !respondents.contains(&respondent) {
-            respondents.push(respondent);
+        questioners.push(questioner.clone());
+        if !questionees.contains(&questionee) {
+            questionees.push(questionee);
         }
         internal_ids.push(internal_id);
         topics.push(topic);
     }
 
+    // The actual respondents may differ from the questionees so we need to extract the actual respondents from the discussion text.
+    let speakers = extract_speakers_from_discussion(discussion_text, typo_map);
+    let respondents: Vec<String> = speakers
+        .into_iter()
+        .filter(|s| !questioners.contains(s))
+        .collect();
+
     Ok(QuestionData {
         questioners,
+        questionees,
         respondents,
         topics,
         discussion: get_discussion_json(discussion_text),
         internal_ids,
     })
+}
+
+/// Look at the discussion and extract the actual speakers.
+fn extract_speakers_from_discussion(
+    discussion_text: &str,
+    typo_map: &HashMap<String, String>,
+) -> Vec<String> {
+    let mut seen = Vec::new();
+    for paragraph in discussion_text.split("NEWPARAGRAPH") {
+        let Some(raw) = discussion_speaker_regex()
+            .captures(paragraph.trim_start())
+            .map(|cap| cap[1].to_string())
+        else {
+            continue;
+        };
+        let cleaned = normalize_speaker_name(&raw);
+        let resolved = typo_map.get(&cleaned).cloned().unwrap_or(cleaned);
+        if !seen.contains(&resolved) && resolved.to_lowercase() != "de voorzitter" {
+            seen.push(resolved);
+        }
+    }
+    seen
+}
+
+/// Strip title from a speaker name.
+fn normalize_speaker_name(raw: &str) -> String {
+    let no_parens = paren_regex().replace_all(raw, " ");
+    let no_title = titles_regex().replace(no_parens.trim(), "");
+    whitespace_regex()
+        .replace_all(no_title.trim(), " ")
+        .trim()
+        .to_string()
+}
+
+fn paren_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"\([^)]*\)").unwrap())
+}
+
+fn whitespace_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"\s+").unwrap())
+}
+
+fn discussion_speaker_regex() -> &'static Regex {
+    // NOTE: See IC311 question 1: some speaker paragraphs have multiple leading sequence numbers such as '01.02 01.03' instead of just '01.01'.
+    // We need to make sure to ignore all of them.
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"^(?:\d{2}\.\d{2}\s+)*\d{2}\.\d{2}\s+([^,:\n]+?)\s*[,:]").unwrap()
+    })
+}
+
+/// Some reports (for example meeting IC156) mistakenly omit the space after a leading "-" for sub-questions,
+/// e.g. "-Kjell Vander Elst aan ..." instead of "- Kjell Vander Elst aan ...".
+fn normalize_leading_dash(text: String) -> String {
+    if let Some(rest) = text.strip_prefix('-') {
+        if !rest.starts_with(' ') {
+            return format!("- {}", rest);
+        }
+    }
+    text
 }
 
 fn get_discussion_json(input: &str) -> String {
@@ -1669,8 +1747,15 @@ fn extract_vote_from_table(table: ElementRef) -> VoteRecord {
     let mut no = 0u32;
     let mut abstain = 0u32;
 
+    // Index of the column holding the actual total to use.
+    // Defaults to 1 (old format: label, value, french-label).
+    // Gets overridden to the "Tot." column index if a header row is found
+    // (new format: label, N, Tot., F, french-label).
+    let mut value_col: usize = 1;
+
     for (i, row) in table.select(selector_tr()).enumerate() {
         let cells: Vec<_> = row.select(selector_td()).collect();
+
         if i == 0 {
             let text = row.text().collect::<Vec<_>>().join(" ").trim().to_string();
             if text.contains("Stemming/vote") {
@@ -1682,24 +1767,45 @@ fn extract_vote_from_table(table: ElementRef) -> VoteRecord {
             }
             continue;
         }
-        if processing && cells.len() >= 2 {
-            let label = cells[0]
-                .text()
-                .collect::<Vec<_>>()
-                .join(" ")
-                .trim()
-                .to_string();
-            let value_str = cells[1].text().collect::<Vec<_>>().join(" ");
-            if let Ok(v) = value_str.trim().parse::<u32>() {
-                match label.as_str() {
-                    "Ja" => yes = v,
-                    "Nee" => no = v,
-                    "Onthoudingen" => abstain = v,
-                    _ => {}
-                }
+
+        if !processing || cells.len() < 2 {
+            continue;
+        }
+
+        let label = cells[0]
+            .text()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .trim()
+            .to_string();
+
+        // Detect the new-format header row (empty label, cells containing
+        // "N" / "Tot." / "F") and record which column is "Tot.".
+        if label.is_empty() {
+            if let Some(idx) = cells
+                .iter()
+                .position(|c| c.text().collect::<Vec<_>>().join(" ").trim() == "Tot.")
+            {
+                value_col = idx;
+            }
+            continue;
+        }
+
+        if cells.len() <= value_col {
+            continue;
+        }
+
+        let value_str = cells[value_col].text().collect::<Vec<_>>().join(" ");
+        if let Ok(v) = value_str.trim().parse::<u32>() {
+            match label.as_str() {
+                "Ja" => yes = v,
+                "Nee" => no = v,
+                "Onthoudingen" => abstain = v,
+                _ => {}
             }
         }
     }
+
     VoteRecord {
         vote_number,
         yes,
@@ -1758,8 +1864,8 @@ fn extract_voter_names(document: &Html, vote_index: &str) -> (String, String, St
             *vote_types[i] = String::new();
             continue;
         }
-        // In extract_voter_names, replace the inner while loop body for each vote_type bucket:
 
+        // In extract_voter_names, replace the inner while loop body for each vote_type bucket:
         let mut node = table.next_sibling();
         let mut collected_names = Vec::new();
 

@@ -45,7 +45,11 @@ fn date_regex() -> &'static Regex {
 }
 
 fn speaker_regex() -> &'static Regex {
-    SPEAKER_REGEX.get_or_init(|| Regex::new(r"(?m)(?:^|(?:NEWPARAGRAPH))[\n\r\s ]*(\d{2}\.\d{2})[\n\r\s ]+([^:]+):|(?:Le  président|De  voorzitter)\s*:").unwrap())
+    // NOTE: See IC311 question 1: some speaker paragraphs have multiple leading sequence numbers such as '01.02 01.03' instead of just '01.01'. (example vanessa matz)
+    // We need to make sure to ignore all of them.
+    SPEAKER_REGEX.get_or_init(|| Regex::new(
+        r"(?m)(?:^|(?:NEWPARAGRAPH))[\n\r\s ]*(?:\d{2}\.\d{2}[\n\r\s ]+)*(\d{2}\.\d{2})[\n\r\s ]+([^:]+):|(?:Le  président|De  voorzitter)\s*:"
+    ).unwrap())
 }
 
 fn speaker_name_regex() -> &'static Regex {
@@ -101,6 +105,7 @@ struct ScrapedQuestion {
     session_id: u32,
     meeting_id: u32,
     questioners: String,
+    questionees: String,
     respondents: String,
     topics_nl: String,
     topics_fr: String,
@@ -115,6 +120,7 @@ struct MeetingOutput {
 
 struct QuestionData {
     questioners: Vec<String>,
+    questionees: Vec<String>,
     respondents: Vec<String>,
     topics: Vec<String>,
     discussion: String,
@@ -255,6 +261,7 @@ fn write_questions(path: &Path, rows: &[ScrapedQuestion]) -> Result<(), Box<dyn 
         Field::new("session_id", DataType::Utf8, false),
         Field::new("meeting_id", DataType::Utf8, false),
         Field::new("questioners", DataType::Utf8, false),
+        Field::new("questionees", DataType::Utf8, false),
         Field::new("respondents", DataType::Utf8, false),
         Field::new("topics_nl", DataType::Utf8, false),
         Field::new("topics_fr", DataType::Utf8, false),
@@ -269,6 +276,7 @@ fn write_questions(path: &Path, rows: &[ScrapedQuestion]) -> Result<(), Box<dyn 
             col!(rows, |q| q.session_id.to_string()),
             col!(rows, |q| q.meeting_id.to_string()),
             col!(rows, |q| q.questioners.clone()),
+            col!(rows, |q| q.questionees.clone()),
             col!(rows, |q| q.respondents.clone()),
             col!(rows, |q| q.topics_nl.clone()),
             col!(rows, |q| q.topics_fr.clone()),
@@ -475,6 +483,7 @@ fn extract_questions(
             session_id,
             meeting_id,
             questioners: data_nl.questioners.join(","),
+            questionees: data_nl.questionees.join(","),
             respondents: data_nl.respondents.join(","),
             topics_nl: data_nl.topics.join(";"),
             topics_fr: data_fr.topics.join(";"),
@@ -490,7 +499,7 @@ fn extract_questions(
             let mut found_nl: Option<String> = None;
             let mut found_fr: Option<String> = None;
 
-            // Dutch spans — swap to FR if they look French.
+            // Dutch spans: swap to FR if they look French.
             if let Some(span) = element
                 .select(selector_span())
                 .filter(|s| matches!(s.value().attr("lang"), Some("NL") | Some("NL-BE")))
@@ -498,6 +507,7 @@ fn extract_questions(
             {
                 let text =
                     clean_text(&span.text().collect::<Vec<_>>().join(" ")).replace("\"", "'");
+                let text = handle_one_off_issues(text);
                 if french_indicators
                     .iter()
                     .any(|w| text.to_lowercase().contains(w))
@@ -508,7 +518,7 @@ fn extract_questions(
                 }
             }
 
-            // French spans — swap to NL if they look Dutch.
+            // French spans: swap to NL if they look Dutch.
             if let Some(span) = element
                 .select(selector_span())
                 .filter(|s| s.value().attr("lang") == Some("FR"))
@@ -516,6 +526,7 @@ fn extract_questions(
             {
                 let text =
                     clean_text(&span.text().collect::<Vec<_>>().join(" ")).replace("\"", "'");
+                let text = handle_one_off_issues(text);
                 if dutch_indicators
                     .iter()
                     .any(|w| text.to_lowercase().contains(w))
@@ -607,6 +618,7 @@ fn extract_questions(
                 .trim()
                 .to_string();
             if !text.is_empty() {
+                let text = handle_one_off_issues(text);
                 previous_discussion.push_str(&clean_text(&text));
                 previous_discussion.push_str("NEWPARAGRAPH");
             }
@@ -628,18 +640,66 @@ fn extract_questions(
     Ok(questions)
 }
 
+/// Handle one-off mistakes from the commission meeting reports.
+fn handle_one_off_issues(text: String) -> String {
+    // Meeting C165: question 12 has '-Kjell Vander Elst' instead of '- Kjell Vander Elst' so a missing space, handle it here
+    let text = {
+        static RE: OnceLock<Regex> = OnceLock::new();
+        let re = RE.get_or_init(|| Regex::new(r"^-(\S)").unwrap());
+        re.replace(&text, "- $1").into_owned()
+    };
+
+    // Meeting C129: question 2 contains an additional 'Vraag van Xavier Dubois' instead of just 'Xavier Dubois', handle it here
+    let text = if let Some(rest) = text.strip_prefix("- Vraag van ") {
+        format!("- {}", rest)
+    } else {
+        text
+    };
+
+    // Meeting C393: contains 'Isabelle Hansez Je vous remercie beaucoup', with missing colon
+    let text = {
+        static RE: OnceLock<Regex> = OnceLock::new();
+        let re = RE
+            .get_or_init(|| Regex::new(r"^(\d{2}\.\d{2}\s+Isabelle\s+Hansez)\s+([A-Z])").unwrap());
+        re.replace(&text, "$1: $2").into_owned()
+    };
+
+    // Meeting 188: contains 'Stefaan Van Hecke (Ecolo-Groen:' without closing round bracket
+    let text = {
+        static RE: OnceLock<Regex> = OnceLock::new();
+        let re = RE.get_or_init(|| Regex::new(r"(\([^():\n]*?):\s").unwrap());
+        re.replace(&text, "$1): ").into_owned()
+    };
+
+    // Meeting 161: contains 'Minister Jan Jambon Ik denk dat het zo in de budgettaire tabel staat. Ik zou het moeten nakijken.' with missing colon
+    let text = {
+        static RE: OnceLock<Regex> = OnceLock::new();
+        let re = RE.get_or_init(|| {
+            Regex::new(r"^(\d{2}\.\d{2}\s+Minister\s+Jan\s+Jambon)\s+([A-ZÀ-Ý])").unwrap()
+        });
+        re.replace(&text, "$1: $2").into_owned()
+    };
+
+    text
+}
+
 fn extract_question_data(
     question_text: &str,
     discussion_text: &str,
 ) -> Result<QuestionData, Box<dyn Error>> {
     let mut questioners = Vec::new();
     let mut topics = Vec::new();
-    let mut respondents = Vec::new();
+    let mut questionees = Vec::new();
     let mut dossier_ids = Vec::new();
 
     for capture in question_regex().captures_iter(question_text) {
-        let questioner = capture[1].trim().replace("- ", "").replace("de heer ", "");
-        let respondent = capture
+        let questioner = capture[1]
+            .trim()
+            .replace("- ", "")
+            .replace("de heer ", "")
+            .trim()
+            .to_string();
+        let questionee = capture
             .get(2)
             .map(|m| m.as_str().trim().to_string())
             .unwrap_or_else(|| "Onbekend".to_string());
@@ -647,19 +707,71 @@ fn extract_question_data(
         let dossier_id = format!("Q{}", capture[4].trim());
 
         questioners.push(questioner);
-        if !respondents.contains(&respondent) {
-            respondents.push(respondent);
+        if !questionees.contains(&questionee) {
+            questionees.push(questionee);
         }
         dossier_ids.push(dossier_id);
         topics.push(topic);
     }
 
+    // The actual respondents may differ from the questionees so we need to extract the actual respondents from the discussion text.
+    let speakers = extract_speakers_from_discussion(discussion_text);
+    let respondents: Vec<String> = speakers
+        .into_iter()
+        .filter(|s| !questioners.contains(s))
+        .collect();
+
     Ok(QuestionData {
         questioners,
+        questionees,
         respondents,
         topics,
         discussion: get_discussion_json(discussion_text),
         dossier_ids,
+    })
+}
+
+/// Look at the discussion and extract the actual speakers.
+fn extract_speakers_from_discussion(discussion_text: &str) -> Vec<String> {
+    let mut seen = Vec::new();
+    for paragraph in discussion_text.split("NEWPARAGRAPH") {
+        let Some(raw) = discussion_speaker_regex()
+            .captures(paragraph.trim_start())
+            .map(|cap| cap[1].to_string())
+        else {
+            continue;
+        };
+        let cleaned = normalize_speaker_name(&raw);
+    }
+    seen
+}
+
+/// Strip title from a speaker name.
+fn normalize_speaker_name(raw: &str) -> String {
+    let no_parens = paren_regex().replace_all(raw, " ");
+    let no_title = titles_regex().replace(no_parens.trim(), "");
+    whitespace_regex()
+        .replace_all(no_title.trim(), " ")
+        .trim()
+        .to_string()
+}
+
+fn paren_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"\([^)]*\)").unwrap())
+}
+
+fn whitespace_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"\s+").unwrap())
+}
+
+fn discussion_speaker_regex() -> &'static Regex {
+    // NOTE: See IC311 question 1: some speaker paragraphs have multiple leading sequence numbers such as '01.02 01.03' instead of just '01.01'. (example vanessa matz)
+    // We need to make sure to ignore all of them.
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"^(?:\d{2}\.\d{2}\s+)*\d{2}\.\d{2}\s+([^,:\n]+?)\s*[,:]").unwrap()
     })
 }
 

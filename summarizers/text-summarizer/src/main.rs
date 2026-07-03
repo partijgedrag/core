@@ -1,6 +1,7 @@
 use arrow::array::{Array, StringArray};
 use arrow::datatypes::{DataType, Field};
 use arrow::{datatypes::Schema, record_batch::RecordBatch};
+use crawl::paths::{cache_dir, data_dir};
 use indicatif::{ProgressBar, ProgressStyle};
 use parquet::{arrow::ArrowWriter, arrow::arrow_reader::ParquetRecordBatchReaderBuilder};
 use reqwest::Client;
@@ -16,7 +17,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 use tokio::sync::Mutex as TokioMutex;
-use crawl::paths::{cache_dir, data_dir};
 
 struct RateLimiter {
     interval_ms: u64,
@@ -147,6 +147,7 @@ async fn main() {
                 discussie samen in maximaal 4 zinnen, hoe korter hoe beter. Hou de informatiedensiteit \
                 heel hoog, geen onnodige woorden. \
                 - Schrijf in het Nederlands. \
+                - Vermeld politici enkel met hun volledige naam. Laat partijlabels zoals \"(N-VA)\", \"(CD&V)\", \"(Open Vld)\", enzovoort weg. \
                 - Benadruk het hoofdonderwerp en de belangrijkste standpunten/antwoorden. \
                 – Formuleer waarderende, kritische of beschuldigende uitspraken expliciet als meningen, \
                 kritiek of beweringen van de betrokken spreker (bv. \"volgens X\", \"X stelt dat\", \

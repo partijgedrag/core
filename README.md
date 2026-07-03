@@ -76,3 +76,32 @@ An `.env` file is expected with these environment variables.
 ```
 MISTRAL_API_TOKEN="123"
 ```
+
+## Known scraping issues
+
+These issues are known issues in the scraper that should be fixed.
+
+### Commission meetings
+
+- [ ] "Schriftelijk behandelde mondelinge vragen" are not correctly scraped (discussion + respondents are not captured)
+
+## Known data issues
+
+These issues are known issues in the underlying data that have been or will be communicated to De Kamer and might be fixed by them.
+
+**Fixed by De Kamer**
+- ~~Dossier 1236, subdocument 006 has a date of 20/03/2023 which should be 20/03/2026~~
+- ~~Dossier 1280, subdocument 042 has a date of 13/03/2023 which should be 13/03/2026~~
+- ~~Dossier 587, subdocument 003 has a date of 03/01/2024 which should be 03/01/2025~~
+- ~~Plenary 19, vote 2: vote counts do not match member counts in vote details~~
+- ~~Plenary 60, vote 132: vote counts do not match member counts in vote details~~
+- ~~Plenary 117, vote 45: vote counts do not match member counts in vote details~~
+- ~~Plenary 117, vote 84: vote counts do not match member counts in vote details~~
+
+
+**Acknowleged by De Kamer, not to be fixed or not fixed yet**
+- Plenary 71, question 1 contains the name 'Steven Coengrachts' instead of 'Steven Coenegrachts' (human-made typo)
+
+
+**Not yet communicated to De Kamer**
+- Plenary 5, question 1 about 'Het uitstellen van de indiening van het begrotingsplan bij de EU' has ID '56000005P' but question 4 about 'Audi Vorst' also has ID '56000005P'.

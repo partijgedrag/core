@@ -148,6 +148,7 @@ enum DocumentType {
     VoorstelTotHerziening,
     VoorstelVanResolutie,
     VoorstelVanMotie,
+    VoorstelVanVerklaring,
     WetsOntwerp,
     WetsVoorstel,
     Onbekend,
@@ -744,6 +745,8 @@ fn parse_document_type(raw: &str) -> DocumentType {
         DocumentType::AangenomenMotie
     } else if raw.contains("voorstel van motie") {
         DocumentType::VoorstelVanMotie
+    } else if raw.contains("voorstel van verklaring") {
+        DocumentType::VoorstelVanVerklaring
     } else if raw.contains("aangenomen tekst") {
         DocumentType::AangenomenTekst
     } else if raw.contains("advies") {
