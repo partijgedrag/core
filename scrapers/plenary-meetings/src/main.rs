@@ -159,6 +159,7 @@ struct ScrapedQuestion {
     topics_fr: String,
     discussion: String,
     internal_ids: String,
+    date: String,
 }
 
 struct ScrapedProposition {
@@ -169,6 +170,7 @@ struct ScrapedProposition {
     title_fr: String,
     dossier_id: String,
     document_id: String,
+    date: String,
 }
 
 struct ScrapedNotice {
@@ -177,6 +179,7 @@ struct ScrapedNotice {
     meeting_id: u32,
     title_nl: String,
     title_fr: String,
+    date: String,
 }
 
 struct MeetingOutput {
@@ -282,6 +285,7 @@ fn write_questions(path: &Path, rows: &[ScrapedQuestion]) -> Result<(), Box<dyn 
         Field::new("topics_fr", DataType::Utf8, false),
         Field::new("discussion", DataType::Utf8, false),
         Field::new("internal_ids", DataType::Utf8, false),
+        Field::new("date", DataType::Utf8, false),
     ]));
     write_parquet(
         path,
@@ -297,6 +301,7 @@ fn write_questions(path: &Path, rows: &[ScrapedQuestion]) -> Result<(), Box<dyn 
             col!(rows, |q| q.topics_fr.clone()),
             col!(rows, |q| q.discussion.clone()),
             col!(rows, |q| q.internal_ids.clone()),
+            col!(rows, |q| q.date.clone()),
         ],
     )
 }
@@ -310,6 +315,7 @@ fn write_propositions(path: &Path, rows: &[ScrapedProposition]) -> Result<(), Bo
         Field::new("title_fr", DataType::Utf8, false),
         Field::new("dossier_id", DataType::Utf8, false),
         Field::new("document_id", DataType::Utf8, false),
+        Field::new("date", DataType::Utf8, false),
     ]));
     write_parquet(
         path,
@@ -322,6 +328,7 @@ fn write_propositions(path: &Path, rows: &[ScrapedProposition]) -> Result<(), Bo
             col!(rows, |p| p.title_fr.clone()),
             col!(rows, |p| p.dossier_id.clone()),
             col!(rows, |p| p.document_id.clone()),
+            col!(rows, |p| p.date.clone()),
         ],
     )
 }
@@ -374,6 +381,7 @@ fn write_notices(path: &Path, rows: &[ScrapedNotice]) -> Result<(), Box<dyn Erro
         Field::new("meeting_id", DataType::Utf8, false),
         Field::new("title_nl", DataType::Utf8, false),
         Field::new("title_fr", DataType::Utf8, false),
+        Field::new("date", DataType::Utf8, false),
     ]));
     write_parquet(
         path,
@@ -384,6 +392,7 @@ fn write_notices(path: &Path, rows: &[ScrapedNotice]) -> Result<(), Box<dyn Erro
             col!(rows, |n| n.meeting_id.to_string()),
             col!(rows, |n| n.title_nl.clone()),
             col!(rows, |n| n.title_fr.clone()),
+            col!(rows, |n| n.date.clone()),
         ],
     )
 }
@@ -572,7 +581,7 @@ async fn scrape_meeting(
     .map(|(k, v)| (k.to_string(), v.to_string()))
     .collect();
 
-    let questions = extract_questions(&document, session_id, meeting_id, &typo_map).await?;
+    let questions = extract_questions(&document, session_id, meeting_id, &date, &typo_map).await?;
     let propositions = extract_propositions(
         &document,
         session_id,
@@ -581,7 +590,7 @@ async fn scrape_meeting(
         encountered_dossier_ids,
     )
     .await?;
-    let notices = extract_notices(&document, session_id, meeting_id).await?;
+    let notices = extract_notices(&document, session_id, meeting_id, &date).await?;
     let votes = extract_votes(
         &document,
         session_id,
@@ -611,6 +620,7 @@ async fn extract_questions(
     document: &Html,
     session_id: u32,
     meeting_id: u32,
+    date: &str,
     typo_map: &HashMap<String, String>,
 ) -> Result<Vec<ScrapedQuestion>, Box<dyn Error>> {
     let mut questions = Vec::new();
@@ -643,6 +653,7 @@ async fn extract_questions(
             topics_fr: data_fr.topics.join(";"),
             discussion: data_nl.discussion,
             internal_ids: data_nl.internal_ids.join(","),
+            date: date.to_string(),
         }))
     };
 
@@ -923,6 +934,7 @@ async fn extract_propositions(
                 title_fr: data_fr.topic,
                 dossier_id: dossier_id_opt.clone().unwrap_or_default(),
                 document_id: data_nl.document_id.unwrap_or_default(),
+                date: date.to_string(),
             });
             proposition_id += 1;
 
@@ -944,6 +956,7 @@ async fn extract_notices(
     document: &Html,
     session_id: u32,
     meeting_id: u32,
+    date: &str,
 ) -> Result<Vec<ScrapedNotice>, Box<dyn Error>> {
     let mut notices = Vec::new();
     let mut notice_id: i32 = 0;
@@ -1060,6 +1073,7 @@ async fn extract_notices(
                 meeting_id,
                 title_nl: nl.clone(),
                 title_fr: fr.clone(),
+                date: date.to_string(),
             });
             notice_id += 1;
         }

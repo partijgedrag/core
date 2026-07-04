@@ -111,6 +111,7 @@ struct ScrapedQuestion {
     topics_fr: String,
     discussion: String,
     dossier_ids: String,
+    date: String,
 }
 
 struct MeetingOutput {
@@ -267,6 +268,7 @@ fn write_questions(path: &Path, rows: &[ScrapedQuestion]) -> Result<(), Box<dyn 
         Field::new("topics_fr", DataType::Utf8, false),
         Field::new("discussion", DataType::Utf8, false),
         Field::new("dossier_ids", DataType::Utf8, false),
+        Field::new("date", DataType::Utf8, false),
     ]));
     write_parquet(
         path,
@@ -282,6 +284,7 @@ fn write_questions(path: &Path, rows: &[ScrapedQuestion]) -> Result<(), Box<dyn 
             col!(rows, |q| q.topics_fr.clone()),
             col!(rows, |q| q.discussion.clone()),
             col!(rows, |q| q.dossier_ids.clone()),
+            col!(rows, |q| q.date.clone()),
         ],
     )
 }
@@ -436,7 +439,7 @@ async fn scrape_meeting(
     let chair = extract_chair_from_document(&document)?;
     let commission = extract_commission_from_document(&document)?;
 
-    let questions = extract_questions(&document, session_id, meeting_id)?;
+    let questions = extract_questions(&document, session_id, meeting_id, &date)?;
 
     Ok(MeetingOutput {
         meeting: ScrapedMeeting {
@@ -457,6 +460,7 @@ fn extract_questions(
     document: &Html,
     session_id: u32,
     meeting_id: u32,
+    date: &str,
 ) -> Result<Vec<ScrapedQuestion>, Box<dyn Error>> {
     let mut questions = Vec::new();
     let mut previous_nl = String::new();
@@ -489,6 +493,7 @@ fn extract_questions(
             topics_fr: data_fr.topics.join(";"),
             discussion: data_nl.discussion,
             dossier_ids: data_nl.dossier_ids.join(","),
+            date: date.to_string(),
         }))
     };
 
@@ -742,6 +747,9 @@ fn extract_speakers_from_discussion(discussion_text: &str) -> Vec<String> {
             continue;
         };
         let cleaned = normalize_speaker_name(&raw);
+        if !seen.contains(&cleaned) {
+            seen.push(cleaned);
+        }
     }
     seen
 }
