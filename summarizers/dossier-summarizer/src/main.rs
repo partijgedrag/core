@@ -44,6 +44,12 @@ impl RateLimiter {
     }
 }
 
+impl CachedAdoptedTextSummaries {
+    fn is_complete(&self) -> bool {
+        !self.social_summary.trim().is_empty()
+    }
+}
+
 // CONSTANTS
 const MAX_RETRIES: u32 = 5;
 const INITIAL_BACKOFF_MS: u64 = 2_000;
@@ -59,6 +65,7 @@ const SEO_DESCRIPTION_MAX: usize = 158;
 struct CachedAdoptedTextSummaries {
     summary_hash: String,
     summary: String,
+    social_summary: String,
     title: String,
     description: String,
     model: String,
@@ -97,6 +104,7 @@ struct AdoptedTextSummaryJson {
     title: String,
     description: String,
     summary: String,
+    social_summary: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default)]
@@ -129,7 +137,8 @@ Geef je antwoord als JSON met EXACT deze structuur (geen extra velden, geen comm
 {{\n\
   \"title\": \"SEO-titel voor deze pagina, tussen {title_min} en {title_max} tekens\",\n\
   \"description\": \"SEO meta-omschrijving voor deze pagina, tussen {desc_min} en {desc_max} tekens\",\n\
-  \"summary\": \"samenvatting van de tekst voor een gewone kiezer zonder juridische kennis\"\n\
+  \"summary\": \"samenvatting van de tekst voor een gewone kiezer zonder juridische kennis\",\n\
+  \"social_summary\": \"samenvatting en context van de tekst voor een instagram gebruiker zonder juridische kennis\"\n\
 }}\n\n\
 Regels voor \"title\":\n\
 - Schrijf in het Nederlands.\n\
@@ -149,6 +158,14 @@ Regels voor \"summary\":\n\
 - Benadruk het hoofdonderwerp en de concrete gevolgen.\n\
 - Houd het objectief — geen politieke interpretatie, alleen feiten.\n\
 - Geen extra uitleg, geen opsommingen, enkel de samenvatting.\n\
+- Geen voorzetsel zoals 'Samenvatting:' of 'Samenvatting van de tekst:'.\n\n\
+Regels voor \"social_summary\":\n\
+- Schrijf in het Nederlands.\n\
+- Maximaal 2 korte alinea's, geschikt voor een Instagram-post.\n\
+- Directe, toegankelijke taal — geen jargon, geen ambtelijke stijl.\n\
+- Leg eerst kort uit wat er verandert, dan wat het concreet betekent voor mensen.\n\
+- Blijf feitelijk en neutraal, maar mag scherper/prikkelender geformuleerd zijn dan \"summary\".\n\
+- Geen hashtags, geen emoji's, geen call-to-action.\n\
 - Geen voorzetsel zoals 'Samenvatting:' of 'Samenvatting van de tekst:'.\n\n\
 Enkel de JSON teruggeven, niets anders.\n\n\
 Documentinhoud:\n{content}",
@@ -266,6 +283,7 @@ fn load_existing_adopted_text_summaries(
         let batch = batch.unwrap();
         let hash_col = col_str(&batch, "summary_hash");
         let summary_col = col_str(&batch, "summary");
+        let social_summary_col = col_str_opt(&batch, "social_summary");
         let title_col = col_str(&batch, "title");
         let description_col = col_str(&batch, "description");
         let model_col = col_str(&batch, "model");
@@ -278,6 +296,9 @@ fn load_existing_adopted_text_summaries(
                 CachedAdoptedTextSummaries {
                     summary_hash: hash_col.value(i).to_string(),
                     summary: summary_col.value(i).to_string(),
+                    social_summary: social_summary_col
+                        .map(|c| c.value(i).to_string())
+                        .unwrap_or_default(),
                     title: title_col.value(i).to_string(),
                     description: description_col.value(i).to_string(),
                     model: model_col.value(i).to_string(),
@@ -333,6 +354,7 @@ fn save_adopted_text_summary(
     let (
         mut hashes,
         mut summaries,
+        mut social_summaries,
         mut titles,
         mut descriptions,
         mut models,
@@ -348,10 +370,12 @@ fn save_adopted_text_summary(
         vec![],
         vec![],
         vec![],
+        vec![],
     );
     for row in cache.values() {
         hashes.push(row.summary_hash.clone());
         summaries.push(row.summary.clone());
+        social_summaries.push(row.social_summary.clone());
         titles.push(row.title.clone());
         descriptions.push(row.description.clone());
         models.push(row.model.clone());
@@ -362,6 +386,7 @@ fn save_adopted_text_summary(
     let schema = Arc::new(Schema::new(vec![
         Field::new("summary_hash", DataType::Utf8, false),
         Field::new("summary", DataType::Utf8, false),
+        Field::new("social_summary", DataType::Utf8, false),
         Field::new("title", DataType::Utf8, false),
         Field::new("description", DataType::Utf8, false),
         Field::new("model", DataType::Utf8, false),
@@ -374,6 +399,7 @@ fn save_adopted_text_summary(
         vec![
             Arc::new(StringArray::from(hashes)),
             Arc::new(StringArray::from(summaries)),
+            Arc::new(StringArray::from(social_summaries)),
             Arc::new(StringArray::from(titles)),
             Arc::new(StringArray::from(descriptions)),
             Arc::new(StringArray::from(models)),
@@ -440,6 +466,12 @@ fn col_str<'a>(batch: &'a RecordBatch, name: &str) -> &'a StringArray {
         .as_any()
         .downcast_ref::<StringArray>()
         .unwrap_or_else(|| panic!("Column {name} is not a StringArray"))
+}
+
+fn col_str_opt<'a>(batch: &'a RecordBatch, name: &str) -> Option<&'a StringArray> {
+    batch
+        .column_by_name(name)
+        .and_then(|c| c.as_any().downcast_ref::<StringArray>())
 }
 
 /// Call Mistral API
@@ -554,7 +586,7 @@ async fn main() {
     let mistral_api_key = std::env::var("MISTRAL_API_TOKEN").expect("Missing MISTRAL_API_TOKEN");
 
     // Optional: pass a single dossier ID as a CLI argument for testing.
-    let single_dossier: Option<String> = Some(String::from("1526")); //std::env::args().nth(1);
+    let single_dossier: Option<String> = Some(String::from("1596")); //std::env::args().nth(1);
     let client = Client::new();
     let dossiers_base = cache_dir().join("sessions/56/dossiers/pdfs");
     let content_out = data_dir().join("summaries/dossier_content.parquet");
@@ -607,7 +639,11 @@ async fn main() {
                 );
             } else if !content.trim().is_empty() {
                 let hash = hash_text(&content);
-                if !content_cache.contains_key(&hash) {
+                let needs_regen = match content_cache.get(&hash) {
+                    Some(existing) => !existing.is_complete(),
+                    None => true,
+                };
+                if needs_regen {
                     pb.set_message(format!(
                         "api_calls={total_calls} — summarizing adopted text for dossier {dossier_id}"
                     ));
@@ -631,6 +667,7 @@ async fn main() {
                             CachedAdoptedTextSummaries {
                                 summary_hash: hash,
                                 summary: parsed.summary,
+                                social_summary: parsed.social_summary,
                                 title: parsed.title,
                                 description: parsed.description,
                                 model: MODEL_ADOPTED_TEXT.to_string(),
