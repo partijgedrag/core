@@ -140,42 +140,45 @@ fn user_prompt_content(content: &str, is_adopted: bool) -> String {
     };
     format!(
         "{intro} \
-Geef je antwoord als JSON met EXACT deze structuur (geen extra velden, geen commentaar, geen markdown):\n\n\
-{{\n\
-  \"title\": \"SEO-titel voor deze pagina, tussen {title_min} en {title_max} tekens\",\n\
-  \"description\": \"SEO meta-omschrijving voor deze pagina, tussen {desc_min} en {desc_max} tekens\",\n\
-  \"summary\": \"samenvatting van de tekst voor een gewone kiezer zonder juridische kennis\",\n\
-  \"social_summary\": \"samenvatting en context van de tekst voor een instagram gebruiker zonder juridische kennis\"\n\
-}}\n\n\
-Regels voor \"title\":\n\
-- Schrijf in het Nederlands.\n\
-- Tussen {title_min} en {title_max} tekens lang (streef naar die lengte, niet korter, niet langer).\n\
-- Beknopt en concreet, benoem het hoofdonderwerp van het dossier.\n\
-- Geen aanhalingstekens, geen slotpunt, geen 'Samenvatting:' of vergelijkbare voorzetsels.\n\
-- Geen politieke interpretatie, enkel feiten.\n\n\
-Regels voor \"description\":\n\
-- Schrijf in het Nederlands.\n\
-- Tussen {desc_min} en {desc_max} tekens lang (streef naar die lengte, niet korter, niet langer).\n\
-- Eén tot twee zinnen die duidelijk maken waar het dossier over gaat en wat de concrete gevolgen zijn.\n\
-- Geschikt als meta-description voor zoekmachines: pakkend maar feitelijk, geen clickbait.\n\
-- Geen aanhalingstekens, geen politieke interpretatie, enkel feiten.\n\n\
-Regels voor \"summary\":\n\
-- Schrijf in het Nederlands.\n\
-- Gebruik maximaal 4 zinnen, hoe korter hoe beter.\n\
-- Benadruk het hoofdonderwerp en de concrete gevolgen.\n\
-- Houd het objectief — geen politieke interpretatie, alleen feiten.\n\
-- Geen extra uitleg, geen opsommingen, enkel de samenvatting.\n\
-- Geen voorzetsel zoals 'Samenvatting:' of 'Samenvatting van de tekst:'.\n\n\
-Regels voor \"social_summary\":\n\
-- Schrijf in het Nederlands.\n\
-- Maximaal 2 korte alinea's, geschikt voor een Instagram-post.\n\
-- Directe, toegankelijke taal — geen jargon, geen ambtelijke stijl.\n\
-- Leg eerst kort uit wat er verandert, dan wat het concreet betekent voor mensen.\n\
-- Blijf feitelijk en neutraal, maar mag scherper/prikkelender geformuleerd zijn dan \"summary\".\n\
-- Geen hashtags, geen emoji's, geen call-to-action.\n\
-- Geen voorzetsel zoals 'Samenvatting:' of 'Samenvatting van de tekst:'.\n\n\
-Enkel de JSON teruggeven, niets anders.\n\n\
-Documentinhoud:\n{content}",
+    Geef je antwoord als JSON met EXACT deze structuur (geen extra velden, geen commentaar, geen markdown):\n\n\
+    {{\n\
+    \"title\": \"SEO-titel voor deze pagina, tussen {title_min} en {title_max} tekens\",\n\
+    \"description\": \"SEO meta-omschrijving voor deze pagina, tussen {desc_min} en {desc_max} tekens\",\n\
+    \"summary\": \"samenvatting van de tekst voor een gewone kiezer zonder juridische kennis\",\n\
+    \"social_summary\": \"samenvatting en context van de tekst voor een instagram gebruiker zonder juridische kennis\"\n\
+    }}\n\n\
+    Regels voor \"title\":\n\
+    - Schrijf in het Nederlands.\n\
+    - Tussen {title_min} en {title_max} tekens lang (streef naar die lengte, niet korter, niet langer).\n\
+    - Beknopt en concreet, benoem het hoofdonderwerp van het dossier.\n\
+    - Geen aanhalingstekens, geen slotpunt, geen 'Samenvatting:' of vergelijkbare voorzetsels.\n\
+    - Geen politieke interpretatie, enkel feiten.\n\n\
+    Regels voor \"description\":\n\
+    - Schrijf in het Nederlands.\n\
+    - Tussen {desc_min} en {desc_max} tekens lang (streef naar die lengte, niet korter, niet langer).\n\
+    - Eén tot twee zinnen die duidelijk maken waar het dossier over gaat en wat de concrete gevolgen zijn.\n\
+    - Geschikt als meta-description voor zoekmachines: pakkend maar feitelijk, geen clickbait.\n\
+    - Geen aanhalingstekens, geen politieke interpretatie, enkel feiten.\n\n\
+    Regels voor \"summary\":\n\
+    - Schrijf in het Nederlands.\n\
+    - Gebruik maximaal 4 zinnen, hoe korter hoe beter.\n\
+    - Benadruk het hoofdonderwerp en de concrete gevolgen.\n\
+    - Houd het objectief — geen politieke interpretatie, alleen feiten.\n\
+    - Geen extra uitleg, geen opsommingen, enkel de samenvatting.\n\
+    - Geen voorzetsel zoals 'Samenvatting:' of 'Samenvatting van de tekst:'.\n\n\
+    Regels voor \"social_summary\":\n\
+    - Schrijf in het Nederlands.\n\
+    - Maximaal 2 korte alinea's, geschikt voor een Instagram-post.\n\
+    - Directe, toegankelijke taal — geen jargon, geen ambtelijke stijl.\n\
+    - Leg eerst kort uit wat het voorstel/de tekst inhoudt, dan wat de concrete gevolgen zijn of zouden zijn.\n\
+    - Blijf strikt feitelijk en neutraal: geen partij kiezen, geen morele lading, geen suggestie dat een van de partijen 'niet luisterde' of 'geen oplossing biedt'.\n\
+    - Geen retorische stijlmiddelen: geen 'Stel je voor...', geen directe aanspreking van de lezer, geen retorische vragen, geen dramatiserende taal ('geen oplossing in zicht', 'blijft zitten met').\n\
+    - Als de tekst niet werd aangenomen: benoem dat expliciet en neutraal (bv. 'Dit voorstel werd niet aangenomen door de Kamer'), zonder de premisse van het voorstel als vaststaand feit te presenteren en zonder impliciet spijt of kritiek te uiten over de verwerping.\n\
+    - Toon mag toegankelijk en to-the-point zijn, maar niet activistisch of pleitend.\n\
+    - Geen hashtags, geen emoji's, geen call-to-action.\n\
+    - Geen voorzetsel zoals 'Samenvatting:' of 'Samenvatting van de tekst:'.\n\n\
+    Enkel de JSON teruggeven, niets anders.\n\n\
+    Documentinhoud:\n{content}",
         intro = intro,
         title_min = SEO_TITLE_MIN,
         title_max = SEO_TITLE_MAX,
@@ -594,7 +597,7 @@ async fn main() {
     let mistral_api_key = std::env::var("MISTRAL_API_TOKEN").expect("Missing MISTRAL_API_TOKEN");
 
     // Optional: pass a single dossier ID as a CLI argument for testing.
-    let single_dossier: Option<String> = Some(String::from("1511")); //std::env::args().nth(1);
+    let single_dossier: Option<String> = Some(String::from("1385")); //std::env::args().nth(1);
     let client = Client::new();
     let dossiers_base = cache_dir().join("sessions/56/dossiers/pdfs");
     let content_out = data_dir().join("summaries/dossier_content.parquet");
