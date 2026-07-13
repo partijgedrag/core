@@ -130,9 +130,16 @@ Je antwoordt ALTIJD uitsluitend met geldig JSON. \
 Geen extra tekst, geen uitleg, geen markdown code-blokken — enkel de JSON."
 }
 
-fn user_prompt_content(content: &str) -> String {
+fn user_prompt_content(content: &str, is_adopted: bool) -> String {
+    let intro = if is_adopted {
+        "Je krijgt de volledige tekst van een aangenomen parlementaire tekst."
+    } else {
+        "Je krijgt de volledige tekst van een parlementair voorstel dat NIET werd aangenomen door de Kamer \
+    (verworpen of zonder voorwerp verklaard). Behandel de tekst uitdrukkelijk als een voorstel, niet als geldende wetgeving, \
+    en maak dit waar relevant duidelijk in de samenvatting."
+    };
     format!(
-        "Je krijgt de volledige tekst van een aangenomen parlementaire tekst. \
+        "{intro} \
 Geef je antwoord als JSON met EXACT deze structuur (geen extra velden, geen commentaar, geen markdown):\n\n\
 {{\n\
   \"title\": \"SEO-titel voor deze pagina, tussen {title_min} en {title_max} tekens\",\n\
@@ -169,6 +176,7 @@ Regels voor \"social_summary\":\n\
 - Geen voorzetsel zoals 'Samenvatting:' of 'Samenvatting van de tekst:'.\n\n\
 Enkel de JSON teruggeven, niets anders.\n\n\
 Documentinhoud:\n{content}",
+        intro = intro,
         title_min = SEO_TITLE_MIN,
         title_max = SEO_TITLE_MAX,
         desc_min = SEO_DESCRIPTION_MIN,
@@ -586,7 +594,7 @@ async fn main() {
     let mistral_api_key = std::env::var("MISTRAL_API_TOKEN").expect("Missing MISTRAL_API_TOKEN");
 
     // Optional: pass a single dossier ID as a CLI argument for testing.
-    let single_dossier: Option<String> = Some(String::from("1596")); //std::env::args().nth(1);
+    let single_dossier: Option<String> = Some(String::from("1511")); //std::env::args().nth(1);
     let client = Client::new();
     let dossiers_base = cache_dir().join("sessions/56/dossiers/pdfs");
     let content_out = data_dir().join("summaries/dossier_content.parquet");
@@ -627,10 +635,20 @@ async fn main() {
     for dossier_id in &dossier_ids {
         let dossier_dir = dossiers_base.join(dossier_id);
 
-        // Summarize adopted text
+        // Summarize adopted text or original text
         let adopted_path = dossier_dir.join("adopted_text.md");
-        if adopted_path.exists() {
-            let content = std::fs::read_to_string(&adopted_path).unwrap_or_default();
+        let original_path = dossier_dir.join("original_text.md");
+
+        let (source_path, is_adopted) = if adopted_path.exists() {
+            (Some(adopted_path), true)
+        } else if original_path.exists() {
+            (Some(original_path), false)
+        } else {
+            (None, true)
+        };
+
+        if let Some(text_path) = source_path {
+            let content = std::fs::read_to_string(&text_path).unwrap_or_default();
             let trimmed_content = content.trim();
             if trimmed_content.len() < 500 {
                 eprintln!(
@@ -645,9 +663,14 @@ async fn main() {
                 };
                 if needs_regen {
                     pb.set_message(format!(
-                        "api_calls={total_calls} — summarizing adopted text for dossier {dossier_id}"
+                        "api_calls={total_calls} — summarizing {} for dossier {dossier_id}",
+                        if is_adopted {
+                            "adopted text"
+                        } else {
+                            "original (rejected) text"
+                        }
                     ));
-                    let user = user_prompt_content(&content);
+                    let user = user_prompt_content(&content, is_adopted);
                     if let Some(raw_response) = mistral_complete(
                         &client,
                         &mistral_api_key,
@@ -661,7 +684,11 @@ async fn main() {
                     {
                         let parsed = parse_adopted_text_summary_response(&raw_response);
                         check_seo_lengths(dossier_id, &parsed.title, &parsed.description);
-                        let source = format!("adopted_text.md ({})", adopted_path.display());
+                        let source = format!(
+                            "{} ({})",
+                            text_path.file_name().unwrap().to_string_lossy(),
+                            text_path.display()
+                        );
                         content_cache.insert(
                             hash.clone(),
                             CachedAdoptedTextSummaries {

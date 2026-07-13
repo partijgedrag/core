@@ -74,17 +74,22 @@ TABLE_OF_CONTENTS_PAGE_MARKERS = [
 ]
 
 # Regex to detect "same as committee text" redirect pages
+# _REDIRECT_PATTERN = re.compile(
+#     r"(?:"
+#     # Dutch: "...is dezelfde als de tekst/artikelen aangenomen [in eerste/tweede lezing] door de commissie"
+#     r"tekst aangenomen door de plenaire vergadering\s+is dezelfde als de (?:tekst|artikelen) aangenomen"
+#     r"(?:\s+in (?:eerste|tweede) lezing)?\s+door de commissie"
+#     r"|"
+#     # French: mirror both variants (texte/articles, première/deuxième lecture)
+#     r"texte adopt[eé] (?:en s[eé]ance pl[eé]ni[eè]re|par la s[eé]ance pl[eé]ni[eè]re)\s+est identique (?:au texte adopt[eé]|aux articles adopt[eé]s)"
+#     r"(?:\s+en (?:premi[eè]re|deuxi[eè]me) lecture)?\s+par la commission"
+#     r")"
+#     r"\s*\(?DOC\s+(\d+)\s+(\d+)/(\d{3,4})\)?",
+#     re.IGNORECASE | re.DOTALL,
+# )
+
 _REDIRECT_PATTERN = re.compile(
-    r"(?:"
-    # Dutch: "...is dezelfde als de tekst/artikelen aangenomen [in eerste/tweede lezing] door de commissie"
-    r"tekst aangenomen door de plenaire vergadering\s+is dezelfde als de (?:tekst|artikelen) aangenomen"
-    r"(?:\s+in (?:eerste|tweede) lezing)?\s+door de commissie"
-    r"|"
-    # French: mirror both variants (texte/articles, première/deuxième lecture)
-    r"texte adopt[eé] (?:en s[eé]ance pl[eé]ni[eè]re|par la s[eé]ance pl[eé]ni[eè]re)\s+est identique (?:au texte adopt[eé]|aux articles adopt[eé]s)"
-    r"(?:\s+en (?:premi[eè]re|deuxi[eè]me) lecture)?\s+par la commission"
-    r")"
-    r"\s*\(?DOC\s+(\d+)\s+(\d+)/(\d{3,4})\)?",
+    r"(?:tekst aangenomen door de plenaire vergadering\s+is dezelfde als de (?:tekst|artikelen)[^()]{0,150}?|texte adopt[eé] (?:en s[eé]ance pl[eé]ni[eè]re|par la s[eé]ance pl[eé]ni[eè]re)\s+est identique (?:au texte|aux articles)[^()]{0,150}?)\s*\(?DOC\s+(\d+)\s+(\d+)\/(\d{3,4})\)?",
     re.IGNORECASE | re.DOTALL,
 )
 
@@ -177,6 +182,9 @@ REPORT_CONFIG = ExtractionConfig(
     page_top_fraction=0.07,
     page_bottom_fraction=0.08,
     skip_page=_report_skip_page,
+)
+ORIGINAL_TEXT_CONFIG = ExtractionConfig(
+    md_filename="original_text.md", skip_page=_adopted_text_skip_page
 )
 
 
@@ -625,7 +633,11 @@ def download_pdf_following_redirect(
 
 # ── Cleanup helper ─────────────────────────────────────────────────────────────
 # Files that should never be deleted (the raw PDF downloads)
-_KEEP_FILENAMES = {"adopted_text_original.pdf", "report_original.pdf"}
+_KEEP_FILENAMES = {
+    "adopted_text_original.pdf",
+    "report_original.pdf",
+    "original_text_original.pdf",
+}
 
 
 def clean_dossier_dir(dossier_dir: Path):
@@ -661,17 +673,24 @@ def read_dossier_rows(parquet_path: Path) -> list[dict]:
         if "latest_report_url" in schema_names
         else [None] * len(ids)
     )
+    original = (
+        table.column("original_text_url").to_pylist()
+        if "original_text_url" in schema_names
+        else [None] * len(ids)
+    )
 
-    for dossier_id, at_url, r_url in zip(ids, adopted, report):
+    for dossier_id, at_url, r_url, orig_url in zip(ids, adopted, report, original):
         at_url = (at_url or "").strip() or None
         r_url = (r_url or "").strip() or None
-        if at_url is None and r_url is None:
+        orig_url = (orig_url or "").strip() or None
+        if at_url is None and r_url is None and orig_url is None:
             continue
         rows.append(
             {
                 "dossier_id": str(dossier_id),
                 "adopted_text_url": at_url,
                 "report_url": r_url,
+                "original_text_url": orig_url,
             }
         )
 
@@ -748,6 +767,15 @@ def main():
                         "pdf_path": dossier_dir / "report_original.pdf",
                         "cfg": REPORT_CONFIG,
                         "doc_type": "Report",
+                    }
+                )
+            if row["original_text_url"]:
+                documents.append(
+                    {
+                        "url": row["original_text_url"],
+                        "pdf_path": dossier_dir / "original_text_original.pdf",
+                        "cfg": ORIGINAL_TEXT_CONFIG,
+                        "doc_type": "Original Text",
                     }
                 )
 
