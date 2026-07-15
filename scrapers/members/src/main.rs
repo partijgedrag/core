@@ -61,8 +61,24 @@ static REGEX_BIRTH_DATE_WORDS: LazyLock<Regex> = LazyLock::new(|| {
     .unwrap()
 });
 
+/// DATE REGEXES
+static REGEX_DATE_SLASH: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(\d{1,2})/(\d{1,2})/(\d{4})$").unwrap());
+
+/// Matches "van <date> tot <date>", where each <date> is either
+/// "9/3/2017" or "9 maart 2017" style.
+static REGEX_VAN_TOT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+            r"\bvan\s+(\d{1,2}(?:/\d{1,2}/\d{4}|\s+[A-Za-z]+\s+\d{4}))\s+tot\s+(\d{1,2}(?:/\d{1,2}/\d{4}|\s+[A-Za-z]+\s+\d{4}))",
+        )
+        .unwrap()
+});
+
 static REGEX_START_DATE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(\d{1,2})/(\d{1,2})/(\d{4})").unwrap());
+
+static REGEX_START_DATE_WORDS: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(\d{1,2})\s+([A-Za-zÀ-ÿ]+)\s+(\d{4})").unwrap());
 
 static REGEX_END_DATE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"tot\s+(\d{1,2}/\d{1,2}/\d{4})").unwrap());
@@ -86,6 +102,10 @@ static REGEX_ZITTINGSPERIODE: LazyLock<Regex> = LazyLock::new(|| {
             r"Zittingsperiode\s+(\d+)\s*\((\d{2})\.(\d{2})\.(\d{4})\s*-\s*(?:(\d{2})\.(\d{2})\.(\d{4}))?[^)]*\)",
         )
         .unwrap()
+});
+
+static REGEX_REPLACEE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)(?:ter vervanging van|in opvolging van|opvolging van)\s+([^)|.]+)").unwrap()
 });
 
 /// SELECTORS
@@ -152,6 +172,7 @@ struct ScrapedMember {
     active: bool,
     start: Option<String>,
     end: Option<String>,
+    replacee: Option<String>,
 }
 
 #[derive(Hash)]
@@ -253,6 +274,7 @@ fn write_parquet(path: &Path, members: &[ScrapedMember]) -> Result<(), Box<dyn E
         Field::new("active", DataType::Utf8, false),
         Field::new("start", DataType::Utf8, true),
         Field::new("end", DataType::Utf8, true),
+        Field::new("replacee", DataType::Utf8, true),
     ]));
 
     macro_rules! col {
@@ -288,6 +310,7 @@ fn write_parquet(path: &Path, members: &[ScrapedMember]) -> Result<(), Box<dyn E
             col!(|m| m.active.to_string()),
             col_opt!(|m| m.start.clone()),
             col_opt!(|m| m.end.clone()),
+            col_opt!(|m| m.replacee.clone()),
         ],
     )?;
 
@@ -405,12 +428,24 @@ async fn extract_members(
             fraction
         };
 
-        // Fallback source for start/end dates: the "CV: Zittingsperiode NN
-        // (dd.mm.yyyy - dd.mm.yyyy)" heading, matched against this session's
-        // own number (a member's CV page can list periods for several
-        // sessions).
+        let (van_tot_start, van_tot_end) = extract_van_tot_period(paragraph.as_deref());
         let (period_start, period_end) = extract_period_dates(&detail, session_id);
+
+        // Discard a "van ... tot ..." match that doesn't overlap this session's
+        // own period — it likely describes an earlier, unrelated mandate stint.
+        let (van_tot_start, van_tot_end) = if is_period_relevant(
+            van_tot_start.as_deref(),
+            van_tot_end.as_deref(),
+            period_start.as_deref(),
+            period_end.as_deref(),
+        ) {
+            (van_tot_start, van_tot_end)
+        } else {
+            (None, None)
+        };
+
         let start = extract_start_date(&detail)
+            .or_else(|| van_tot_start.clone())
             .or_else(|| period_start.clone())
             .or_else(|| {
                 if session_id == CURRENT_SESSION && active {
@@ -419,9 +454,14 @@ async fn extract_members(
                     None
                 }
             });
-        let end = extract_end_date(paragraph.as_deref()).or_else(|| period_end.clone());
+        let start = clamp_start_to_period(start, period_start.as_deref());
+
+        let end = extract_end_date(paragraph.as_deref())
+            .or_else(|| van_tot_end.clone())
+            .or_else(|| period_end.clone());
 
         let place_of_birth = extract_birth_place(&detail, &first_name, &last_name);
+        let replacee = extract_replacee(paragraph.as_deref());
 
         members.push(ScrapedMember {
             member_id,
@@ -438,6 +478,7 @@ async fn extract_members(
             active,
             start,
             end,
+            replacee,
         });
 
         pb.inc(1);
@@ -569,6 +610,29 @@ fn normalize_fraction(fraction: String) -> String {
     }
 }
 
+/// Extracts the name of the member being replaced from
+/// "(opvolging van Theo Francken)" in the representative paragraph, if present.
+fn extract_replacee(paragraph: Option<&str>) -> Option<String> {
+    let text = paragraph?;
+    let caps = REGEX_REPLACEE.captures(text)?;
+    let raw = caps.get(1)?.as_str().trim();
+    let name = strip_honorific(raw);
+    if name.is_empty() { None } else { Some(name) }
+}
+
+/// Strips common Dutch honorific prefixes ("de heer", "mevrouw", ...) that
+/// often precede the replaced member's name, e.g. "de heer Jan Jambon" -> "Jan Jambon".
+fn strip_honorific(raw: &str) -> String {
+    const PREFIXES: &[&str] = &["de heer ", "mevrouw ", "mevr. ", "mevr ", "de dame "];
+    let lower = raw.to_lowercase();
+    for prefix in PREFIXES {
+        if lower.starts_with(prefix) {
+            return raw[prefix.len()..].trim().to_string();
+        }
+    }
+    raw.trim().to_string()
+}
+
 fn extract_birth_place(document: &Html, first_name: &str, last_name: &str) -> String {
     let result = document
         .select(&selector_p())
@@ -692,6 +756,50 @@ fn extract_birth_date(document: &Html) -> String {
         .unwrap_or_default()
 }
 
+/// Returns false if the candidate (start, end) period clearly does not
+/// overlap this session's own (period_start, period_end) window — e.g. a
+/// "van ... tot ..." match in the paragraph that actually describes an
+/// earlier, unrelated stint (different constituency/arrondissement) rather
+/// than the member's tenure during this specific session.
+/// Relies on ISO "YYYY-MM-DD" strings, which sort lexicographically in
+/// chronological order.
+fn is_period_relevant(
+    start: Option<&str>,
+    end: Option<&str>,
+    period_start: Option<&str>,
+    period_end: Option<&str>,
+) -> bool {
+    // Candidate ended before this session's period even started.
+    if let (Some(end), Some(p_start)) = (end, period_start) {
+        if end < p_start {
+            return false;
+        }
+    }
+    // Candidate starts after this session's period already ended.
+    if let (Some(start), Some(p_end)) = (start, period_end) {
+        if start > p_end {
+            return false;
+        }
+    }
+    true
+}
+
+/// If `start` predates the current session's own Zittingsperiode start
+/// (`period_start`), clamp it to `period_start` instead. This handles
+/// members whose mandate paragraph reports the date of their *original*
+/// election (e.g. "sedert 31 juli 1984") even though the row being built
+/// is for a later session they continued into (e.g. session 48, which
+/// itself started 16.12.1991).
+/// Relies on both dates being ISO "YYYY-MM-DD" strings, which sort
+/// lexicographically in chronological order.
+fn clamp_start_to_period(start: Option<String>, period_start: Option<&str>) -> Option<String> {
+    match (start, period_start) {
+        (Some(s), Some(p)) if s.as_str() < p => Some(p.to_string()),
+        (start, _) => start,
+    }
+}
+
+/// Extract the date on which the member started.
 fn extract_start_date(document: &Html) -> Option<String> {
     // Try to find a paragraph containing "sedert" or "sinds"
     let text = document
@@ -701,6 +809,7 @@ fn extract_start_date(document: &Html) -> Option<String> {
                 .any(|t| t.contains("sedert") || t.contains("sinds"))
         })
         .map(|el| el.text().collect::<String>());
+
     let text = match text {
         Some(t) => t,
         None => {
@@ -713,12 +822,14 @@ fn extract_start_date(document: &Html) -> Option<String> {
             }
         }
     };
+
     let keyword_pos = text
         .find("sedert")
         .map(|pos| (pos, 6))
         .or_else(|| text.find("sinds").map(|pos| (pos, 5)))?;
     let (pos, keyword_len) = keyword_pos;
     let after = text[pos + keyword_len..].trim_start();
+
     // Try numeric format: dd/mm/yyyy
     if let Some(caps) = REGEX_START_DATE.captures(after) {
         let day: u32 = caps.get(1)?.as_str().parse().ok()?;
@@ -728,12 +839,55 @@ fn extract_start_date(document: &Html) -> Option<String> {
             return Some(date.format("%Y-%m-%d").to_string());
         }
     }
-    // Try Dutch month format: "9 juni 2024"
-    let dutch_date = parse_dutch_date(after.split('|').next().unwrap_or(after).trim());
-    if !dutch_date.is_empty() {
-        return Some(dutch_date);
+
+    // Try Dutch month format: "3 oktober 2019" (search anywhere in `after`,
+    // not just an exact 3-token segment — there may be trailing text like
+    // "ter vervanging van de heer Jan Jambon." before the next `|`)
+    if let Some(caps) = REGEX_START_DATE_WORDS.captures(after) {
+        let day: u32 = caps.get(1)?.as_str().parse().ok()?;
+        let month = dutch_month_to_number(caps.get(2)?.as_str())?;
+        let year: i32 = caps.get(3)?.as_str().parse().ok()?;
+        if let Some(date) = NaiveDate::from_ymd_opt(year, month, day) {
+            return Some(date.format("%Y-%m-%d").to_string());
+        }
+    }
+
+    None
+}
+
+/// Parses a single date string in either "9/3/2017" or "9 maart 2017" format.
+fn parse_flexible_date(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    if let Some(caps) = REGEX_DATE_SLASH.captures(raw) {
+        let day: u32 = caps.get(1)?.as_str().parse().ok()?;
+        let month: u32 = caps.get(2)?.as_str().parse().ok()?;
+        let year: i32 = caps.get(3)?.as_str().parse().ok()?;
+        return NaiveDate::from_ymd_opt(year, month, day).map(|d| d.format("%Y-%m-%d").to_string());
+    }
+    let parsed = parse_dutch_date(raw);
+    if !parsed.is_empty() {
+        return Some(parsed);
     }
     None
+}
+
+/// Extracts an explicit "van <date> tot <date>" period from the
+/// representative paragraph, e.g. "van 9 maart 2017 tot 9 december 2018".
+/// Used when the mandate has already ended and isn't phrased with
+/// "sedert"/"sinds".
+fn extract_van_tot_period(paragraph: Option<&str>) -> (Option<String>, Option<String>) {
+    let text = match paragraph {
+        Some(t) => t,
+        None => return (None, None),
+    };
+    match REGEX_VAN_TOT.captures(text) {
+        Some(caps) => {
+            let start = caps.get(1).and_then(|m| parse_flexible_date(m.as_str()));
+            let end = caps.get(2).and_then(|m| parse_flexible_date(m.as_str()));
+            (start, end)
+        }
+        None => (None, None),
+    }
 }
 
 /// Extracts an end-of-mandate date such as "tot 30/09/2024" from the
